@@ -24,9 +24,12 @@ package hebmorph.datastructures;
 import java.util.Collection;
 import java.util.Iterator;
 
-public class RealSortedList<T extends Comparable> extends java.util.ArrayList<T>
+public class RealSortedList<T extends Comparable<? super T>> extends java.util.ArrayList<T>
 {
-    public enum SortOrder { Asc, Desc };
+	private static final long serialVersionUID = 9216388435253045978L;
+	
+
+	public enum SortOrder { Asc, Desc };
 
 	protected SortOrder sortOrder = SortOrder.Asc;
 
@@ -83,6 +86,9 @@ public class RealSortedList<T extends Comparable> extends java.util.ArrayList<T>
 		return true;
 	}
 
+	/* (non-Javadoc)
+	 * @see java.util.ArrayList#add(java.lang.Object)
+	 */
 	@Override
 	public boolean add(T item)
 	{

@@ -23,6 +23,7 @@ package hebmorph.datastructures;
 
 import hebmorph.LookupTolerators;
 import hebmorph.Reference;
+
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -56,9 +57,14 @@ public class DictRadix<T> implements Iterable<T>
 		{
 			this.key = key;
 		}
-		public char[] getKey()
+		public final char[] getKey()
 		{
 			return key;
+		}
+		
+		@Override
+		public String toString() {
+			return "[ value="+value+"; childrens="+children.length+" ]";
 		}
 	}
 
@@ -66,21 +72,21 @@ public class DictRadix<T> implements Iterable<T>
 	{
 		protected class MatchCandidate
 		{
-			public MatchCandidate(int _keyPos, String _word, float _score)
+			public MatchCandidate(byte _keyPos, String _word, float _score)
 			{
 				this.keyPos = _keyPos;
 				this.word = _word;
 				this.score = _score;
 			}
 
-			private int keyPos;
+			private byte keyPos;
 			private String word;
 			private float score = 1.0f;
-			public int getKeyPos()
+			public byte getKeyPos()
 			{
 				return keyPos;
 			}
-			public void setKeyPos(int keyPos)
+			public void setKeyPos(byte keyPos)
 			{
 				this.keyPos = keyPos;
 			}
@@ -104,7 +110,7 @@ public class DictRadix<T> implements Iterable<T>
 
 		public TolerantLookupCrawler(DictRadix<T> _enclosingInstance, LookupTolerators.ToleranceFunction[] _tolFuncs)
 		{
-			enclosingInstance = _enclosingInstance;
+			this.enclosingInstance = _enclosingInstance;
 			this.toleranceFunctions = _tolFuncs;
 		}
 
@@ -112,24 +118,23 @@ public class DictRadix<T> implements Iterable<T>
 		private DictRadix<T> enclosingInstance;
 
 		private char[] key;
-		private List<LookupResult> resultSet = new ArrayList<LookupResult>();
+		//		private List<LookupResult> resultSet = new ArrayList<LookupResult>();
 
-		public List<LookupResult> lookupTolerant(String strKey)
+		public final List<LookupResult> lookupTolerant(String strKey)
 		{
-			synchronized (resultSet)
+			key = strKey.toCharArray();
+			List<LookupResult> resultSet = new ArrayList<LookupResult>();
+			//				resultSet.clear();
+			lookupTolerantImpl(enclosingInstance.getRootNode(), new MatchCandidate((byte)0, "", 1.0f),resultSet);
+
+			if( resultSet.isEmpty() )
 			{
-				key = strKey.toCharArray();
-				resultSet.clear();
-				lookupTolerantImpl(enclosingInstance.getRootNode(), new MatchCandidate(0, "", 1.0f));
+				return null;
 			}
-			if (resultSet.size() > 0)
-			{
-				return resultSet;
-			}
-			return null;
+			return resultSet;
 		}
 
-		private void lookupTolerantImpl(DictNode cur, MatchCandidate mc)
+		private void lookupTolerantImpl(DictNode cur, MatchCandidate mc,List<LookupResult> resultSet)
 		{
 			if (cur.getChildren() == null)
 			{
@@ -141,23 +146,23 @@ public class DictRadix<T> implements Iterable<T>
 			for (int childPos = 0; childPos < cur.getChildren().length; childPos++)
 			{
 				DictNode child = cur.getChildren()[childPos];
-				doKeyMatching(child, 0, mc);
+				doKeyMatching(child, (byte)0, mc,resultSet);
 			}
 			//System.out.println(String.format("Completed processing node children for word %1$s", mc.Word));
 			//System.out.println("--------------------------");
 		}
 
-		private void doKeyMatching(DictNode node, int nodeKeyPos, MatchCandidate mc)
+		private void doKeyMatching(DictNode node, byte nodeKeyPos, MatchCandidate mc,List<LookupResult> resultSet)
 		{
-			int currentKeyPos = mc.keyPos, startingNodeKeyPos = nodeKeyPos;
+			byte currentKeyPos = mc.keyPos, startingNodeKeyPos = nodeKeyPos;
 			while ((nodeKeyPos < node.getKey().length) && (currentKeyPos < key.length))
 			{
 				// toleration
 				for (LookupTolerators.ToleranceFunction tf : toleranceFunctions)
 				{
-					int tmpKeyPos = mc.keyPos;
+					byte tmpKeyPos = mc.keyPos;
 					float tmpScore = mc.getScore();
-					Reference<Integer> tempRefObject = new Reference<Integer>(tmpKeyPos);
+					Reference<Byte> tempRefObject = new Reference<Byte>(tmpKeyPos);
 					Reference<Float> tempRefObject2 = new Reference<Float>(tmpScore);
 					Integer tret = tf.tolerate(key, tempRefObject, mc.getWord(), tempRefObject2, node.getKey()[nodeKeyPos]);
 					tmpKeyPos = tempRefObject.ref;
@@ -174,11 +179,11 @@ public class DictRadix<T> implements Iterable<T>
 						MatchCandidate nmc = new MatchCandidate(tmpKeyPos, mc.getWord() + consumedLetters, tmpScore);
 						if ((nodeKeyPos + tret) == node.getKey().length)
 						{
-							lookupTolerantImpl(node, nmc);
+							lookupTolerantImpl(node, nmc,resultSet);
 						}
 						else
 						{
-							doKeyMatching(node, (nodeKeyPos + tret), nmc);
+							doKeyMatching(node, (byte)(nodeKeyPos + tret), nmc,resultSet);
 						}
 					}
 				}
@@ -207,7 +212,7 @@ public class DictRadix<T> implements Iterable<T>
 				else
 				{
 					MatchCandidate nmc = new MatchCandidate(currentKeyPos, mc.getWord() + new String(node.getKey(), startingNodeKeyPos, nodeKeyPos - startingNodeKeyPos), mc.getScore());
-					lookupTolerantImpl(node, nmc);
+					lookupTolerantImpl(node, nmc,resultSet);
 				}
 			}
 		}
@@ -224,6 +229,10 @@ public class DictRadix<T> implements Iterable<T>
 	{
 		return m_nCount;
 	}
+	
+	private boolean  m_bAllowValueOverride = false;
+    public boolean getAllowValueOverride() { return m_bAllowValueOverride; }
+    public void setAllowValueOverride(boolean val) { m_bAllowValueOverride = val; }
 
 	public DictRadix()
 	{
@@ -250,10 +259,10 @@ public class DictRadix<T> implements Iterable<T>
 
 	 @param key
 	 @return
-	*/
-	private DictNode lookupImpl(char[] key)
+	 */
+	private final DictNode lookupImpl(char[] key)
 	{
-		int keyPos = 0, n;
+		int keyPos = 0, position;
 		int keyLength = getCharArrayLength(key);
 
 		DictNode cur = m_root;
@@ -262,16 +271,16 @@ public class DictRadix<T> implements Iterable<T>
 			for (int childPos = 0; ; childPos++)
 			{
 				DictNode child = cur.getChildren()[childPos];
-
+				
 				// Do key matching
-				n = 0;
-				while ((n < child.getKey().length) && (keyPos < keyLength) && (child.getKey()[n] == key[keyPos]))
+				position = 0;
+				while ((position < child.getKey().length) && (keyPos < keyLength) && (child.getKey()[position] == key[keyPos]))
 				{
 					keyPos++;
-					n++;
+					position++;
 				}
 
-				if (n == child.getKey().length) // We consumed the child's key, and so far it matches our key
+				if (position == child.getKey().length) // We consumed the child's key, and so far it matches our key
 				{
 					// We consumed both the child's key and the requested key, meaning we found the requested node
 					if (keyLength == keyPos)
@@ -285,7 +294,7 @@ public class DictRadix<T> implements Iterable<T>
 						break;
 					}
 				}
-				else if ((n > 0) || (childPos + 1 == cur.getChildren().length)) // We looked at all the node's children -  Incomplete match to child's key (worths nothing)
+				else if ((position > 0) || (childPos + 1 == cur.getChildren().length)) // We looked at all the node's children -  Incomplete match to child's key (worths nothing)
 				{
 					return null;
 				}
@@ -333,13 +342,13 @@ public class DictRadix<T> implements Iterable<T>
 		private float score;
 	}
 
-	public List<LookupResult> lookupTolerant(String strKey, LookupTolerators.ToleranceFunction[] tolFuncs)
+	public final List<LookupResult> lookupTolerant(String strKey, LookupTolerators.ToleranceFunction[] tolFuncs)
 	{
 		TolerantLookupCrawler tlc = new TolerantLookupCrawler(this, tolFuncs);
 		return tlc.lookupTolerant(strKey);
 	}
 
-	private int getCharArrayLength(char[] ar)
+	private static int getCharArrayLength(char[] ar)
 	{
 		int i = 0;
 		while ((ar.length > i) && (ar[i] != '\0'))
@@ -429,7 +438,7 @@ public class DictRadix<T> implements Iterable<T>
 						System.arraycopy(key, keyPos, newNode.getKey(), 0, newNode.getKey().length);
 						newNode.setValue(data);
 
-						if ((new Character(child.getKey()[0])).compareTo(newNode.getKey()[0]) < 0)
+						if ((Character.valueOf(child.getKey()[0])).compareTo(newNode.getKey()[0]) < 0)
 						{
 							bridgeChild.getChildren()[0] = child;
 							bridgeChild.getChildren()[1] = newNode;
@@ -472,15 +481,16 @@ public class DictRadix<T> implements Iterable<T>
 					// We consumed both the child's key and the requested key
 					else if ((n == child.getKey().length) && (keyLength == keyPos))
 					{
-						if (child.getValue().equals(null))
+						if (child.getValue()==null)
 						{
 							child.setValue(data);
 							m_nCount++;
 						}
-						else
-						{
-							// TODO: Do we allow overriding data? perhaps have compile switches for this?
-						}
+						else if (m_bAllowValueOverride)
+                        {
+                            // Only override data if this radix object is configured to do this
+                            child.value = data;
+                        }
 						return;
 					}
 				}
@@ -498,7 +508,7 @@ public class DictRadix<T> implements Iterable<T>
 				int curPos = 0;
 				for (; curPos < cur.getChildren().length; ++curPos)
 				{
-					if ((new Character(newChild.getKey()[0])).compareTo(cur.getChildren()[curPos].getKey()[0]) < 0)
+					if ((Character.valueOf(newChild.getKey()[0])).compareTo(cur.getChildren()[curPos].getKey()[0]) < 0)
 					{
 						break;
 					}
@@ -517,6 +527,12 @@ public class DictRadix<T> implements Iterable<T>
 			}
 		}
 	}
+	
+	public void clear()
+    {
+        m_root = new DictNode();
+        m_nCount = 0;
+    }
 
 	public class RadixEnumerator implements  java.util.Iterator<T>
 	{
@@ -530,6 +546,21 @@ public class DictRadix<T> implements Iterable<T>
 			nodesPath.addLast(radix.m_root);
 		}
 
+
+        public String getCurrentKey()
+        {
+            StringBuilder sb = new StringBuilder();
+            for(DictNode dn : nodesPath)
+            {
+                if(dn.key != null)
+                    sb.append(dn.key);
+                else
+                    assert dn == radix.m_root;
+            }
+            return sb.toString();
+        }
+
+
 		/*public T getCurrent()
 		{
 			return nodesPath.getLast().getValue();
@@ -540,87 +571,35 @@ public class DictRadix<T> implements Iterable<T>
 			nodesPath.clear();
 			nodesPath.addLast(radix.m_root);
 		}
+		*/
 
-		public String getCurrentKey()
-		{
-			StringBuilder sb = new StringBuilder();
-			for (DictRadix<T>.DictNode dn : nodesPath)
-			{
-				sb.append(dn.getKey());
-			}
-			return sb.toString();
-		}*/
-
-		@Override
 		public T next()
 		{
-			boolean goUp = false;
-
-			while (nodesPath.size() > 0)
-			{
-				DictRadix<T>.DictNode n = nodesPath.getLast();
-				if (goUp || (n.getChildren() == null) || (n.getChildren().length == 0))
-				{
-					nodesPath.removeLast();
-					if (nodesPath.isEmpty())
-					{
-						return null;
-					}
-					goUp = true;
-					for (int i = 0; i < nodesPath.getLast().getChildren().length; i++)
-					{
-						// Move to the next child
-						if ((nodesPath.getLast().getChildren()[i] == n) && (i + 1 < nodesPath.getLast().getChildren().length))
-						{
-							nodesPath.addLast(nodesPath.getLast().getChildren()[i + 1]);
-							if (!nodesPath.getLast().getValue().equals(null))
-							{
-								return nodesPath.getLast().getValue();
-							}
-							goUp = false;
-							break;
-						}
-					}
-				}
-				else
-				{
-					nodesPath.addLast(n.getChildren()[0]);
-					goUp = false;
-					if (!n.getChildren()[0].getValue().equals(null))
-					{
-						return n.getChildren()[0].getValue();
-					}
-				}
-			}
-			return null;
+            assert nodesPath.size() > 0;
+            return nodesPath.getLast().getValue();
 		}
 
-		@Override
 		public boolean hasNext()
 		{
 			boolean goUp = false;
 
 			while (nodesPath.size() > 0)
 			{
-				DictRadix<T>.DictNode n = nodesPath.getLast();
-				if (goUp || (n.getChildren() == null) || (n.getChildren().length == 0))
+				DictRadix<T>.DictNode node = nodesPath.getLast();
+				if (goUp || (node.getChildren() == null) || (node.getChildren().length == 0))
 				{
 					nodesPath.removeLast();
-					if (nodesPath.isEmpty())
-					{
-						return false;
-					}
+					if (nodesPath.isEmpty()) break;
 					goUp = true;
 					for (int i = 0; i < nodesPath.getLast().getChildren().length; i++)
 					{
 						// Move to the next child
-						if ((nodesPath.getLast().getChildren()[i] == n) && (i + 1 < nodesPath.getLast().getChildren().length))
+						if ((nodesPath.getLast().getChildren()[i] == node) &&
+                                (i + 1 < nodesPath.getLast().getChildren().length))
 						{
 							nodesPath.addLast(nodesPath.getLast().getChildren()[i + 1]);
-							if (!nodesPath.getLast().getValue().equals(null))
-							{
+							if (nodesPath.getLast().getValue() != null)
 								return true;
-							}
 							goUp = false;
 							break;
 						}
@@ -628,18 +607,15 @@ public class DictRadix<T> implements Iterable<T>
 				}
 				else
 				{
-					nodesPath.addLast(n.getChildren()[0]);
+					nodesPath.addLast(node.getChildren()[0]);
 					goUp = false;
-					if (!n.getChildren()[0].getValue().equals(null))
-					{
+					if (node.getChildren()[0].getValue() != null)
 						return true;
-					}
 				}
 			}
 			return false;
 		}
 
-		@Override
 		public void remove()
 		{
 			throw new UnsupportedOperationException();

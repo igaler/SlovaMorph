@@ -23,20 +23,29 @@ package hebmorph.hspell;
 
 import hebmorph.MorphData;
 import hebmorph.datastructures.DictRadix;
+import hebmorph.hspell.Constants.DMask;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringWriter;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.zip.GZIPInputStream;
 
-
+import static hebmorph.hspell.Constants.*;
 
 public class Loader
 {
 
+	private static class CustomRelation {
+		String word,to;
+		Integer mask;
+	}
+	
 	private static class MorphDataLoader// implements IDisposable
 	{
 		private GZIPInputStream fdesc, fstem;
@@ -48,6 +57,12 @@ public class Loader
 		{
 			fdesc = new GZIPInputStream(new FileInputStream(descPath));
 			fstem = new GZIPInputStream(new FileInputStream(stemPath));
+		}
+
+		public MorphDataLoader(InputStream descPath, InputStream stemPath) throws FileNotFoundException, IOException
+		{
+			fdesc = new GZIPInputStream(descPath);
+			fstem = new GZIPInputStream(stemPath);
 		}
 
 		public void dispose()
@@ -117,6 +132,23 @@ public class Loader
 		}
 	}
 
+	public static int getWordCountInHSpellFolder(String path) throws IOException
+	{
+
+		String sizesFile = readFileToString(new File(path + Constants.SizesFile));
+		int tmp = sizesFile.indexOf(' ', sizesFile.indexOf('\n'));
+		tmp = Integer.parseInt(sizesFile.substring(tmp + 1).trim());
+		return tmp - 1; // hspell stores the actual word count + 1
+	}
+
+	public static int getWordCountInHSpellFolder(ClassLoader classLoader,String packagePath) throws IOException
+	{
+		String sizesFile = readFileToString(classLoader.getResourceAsStream(packagePath + Constants.SizesFile));
+		int tmp = sizesFile.indexOf(' ', sizesFile.indexOf('\n'));
+		tmp = Integer.parseInt(sizesFile.substring(tmp + 1).trim());
+		return tmp - 1; // hspell stores the actual word count + 1
+	}
+
 	public static DictRadix<MorphData> loadDictionaryFromHSpellFolder(String path, boolean bLoadMorphData) throws IOException
 	{
 		if (path.charAt(path.length() - 1) != File.separatorChar)
@@ -126,10 +158,14 @@ public class Loader
 
 		if (bLoadMorphData)
 		{
-			// Load the count of morphologic data slots required
-			String sizesFile = readFileToString(new File(path + Constants.SizesFile));
-			int lookupLen = sizesFile.indexOf(' ', sizesFile.indexOf('\n'));
-			lookupLen = Integer.parseInt(sizesFile.substring(lookupLen + 1).trim());
+			//sync with Git repository (comment old and add new method)
+			//			// Load the count of morphologic data slots required
+			//			String sizesFile = readFileToString(new File(path + Constants.SizesFile));
+			//			int lookupLen = sizesFile.indexOf(' ', sizesFile.indexOf('\n'));
+			//			lookupLen = Integer.parseInt(sizesFile.substring(lookupLen + 1).trim());
+			List<CustomRelation> customRelations = new LinkedList<Loader.CustomRelation>();
+
+			int lookupLen = getWordCountInHSpellFolder(path);
 			String[] lookup = new String[lookupLen + 1];
 
 			GZIPInputStream fdict = new GZIPInputStream(new FileInputStream(path + Constants.DictionaryFile));
@@ -191,11 +227,39 @@ public class Loader
 							else
 							{
 								data.getLemmas()[stemPosition++] = lookup[r];
+
+								//Igal: add Plural (רבים) without Pronominal (כינוי)
+								if( (data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_NUMMASK))>0 && 
+										(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_NOUN))>0 &&
+										(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_GENDERMASK))>0 &&
+										(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_OMASK))==0 )  {
+
+									CustomRelation relation = new CustomRelation();
+									relation.word = lookup[i];
+									relation.to = lookup[r];
+									relation.mask = data.getDescFlags()[stemPosition-1];
+									customRelations.add(relation);
+								}
+
 							}
 						}
 						ret.addNode(lookup[i], data);
 					}
 
+					for (CustomRelation relation : customRelations) {
+						MorphData subData = ret.lookup(relation.to);
+						if( subData!=null ) {
+							String[] subLemmas = new String[subData.getLemmas().length+1];
+							System.arraycopy(subData.getLemmas(), 0, subLemmas, 0, subData.getLemmas().length);
+							subLemmas[subData.getLemmas().length]=relation.word;
+							subData.setLemmas(subLemmas);
+
+							Integer[] subFlags = new Integer[subData.getDescFlags().length+1];
+							System.arraycopy(subData.getDescFlags(), 0, subFlags, 0, subData.getDescFlags().length);
+							subFlags[subData.getDescFlags().length]=relation.mask;
+							subData.setDescFlags(subFlags);
+						}
+					}
 					return ret;
 				}
 				finally
@@ -215,6 +279,185 @@ public class Loader
 			try
 			{
 				GZIPInputStream fprefixes = new GZIPInputStream(new FileInputStream(path + Constants.PrefixesFile));
+				try
+				{
+					DictRadix<MorphData> ret = new DictRadix<MorphData>();
+
+					char[] sbuf = new char[Constants.MaxWordLength];
+					int c = 0, n, slen = 0;
+					while ((c = fdict.read()) > -1)
+					{
+						if ((c >= '0') && (c <= '9')) // No conversion required for chars < 0xBE
+						{
+							// new word - finalize old word first (set value)
+							sbuf[slen] = '\0';
+
+							// TODO: Avoid creating new MorphData object, and enhance DictRadix to store
+							// the prefixes mask in the node itself
+							MorphData data = new MorphData();
+							data.setPrefixes(fprefixes.read()); // Read prefix hint byte
+							ret.addNode(sbuf, data);
+
+							// and read how much to go back
+							n = 0;
+							do
+							{
+								// base 10...
+								n *= 10;
+								n += (c - '0');
+							} while (((c = fdict.read()) > -1) && (c >= '0') && (c <= '9'));
+							slen -= n;
+						}
+						sbuf[slen++] = ISO8859_To_Unicode(c);
+					}
+
+					return ret;
+				}
+				finally
+				{
+					fprefixes.close();
+				}
+			}
+			finally
+			{
+				fdict.close();
+			}
+		}
+	}
+
+	public static DictRadix<MorphData> loadDictionaryFromHSpellFolder(ClassLoader classLoader,String packagePath, boolean bLoadMorphData) throws IOException 
+	{
+		if (bLoadMorphData)
+		{
+			//sync with Git repository (comment old and add new method)
+			//			// Load the count of morphologic data slots required
+			//			String sizesFile = readFileToString(new File(path + Constants.SizesFile));
+			//			int lookupLen = sizesFile.indexOf(' ', sizesFile.indexOf('\n'));
+			//			lookupLen = Integer.parseInt(sizesFile.substring(lookupLen + 1).trim());
+
+			List<CustomRelation> customRelations = new LinkedList<Loader.CustomRelation>();
+
+			int lookupLen = getWordCountInHSpellFolder(classLoader,packagePath);
+			String[] lookup = new String[lookupLen + 1];
+
+			GZIPInputStream fdict = new GZIPInputStream(classLoader.getResourceAsStream(packagePath + Constants.DictionaryFile));
+			try
+			{
+				char[] sbuf = new char[Constants.MaxWordLength];
+				int c = 0, n, slen = 0, i = 0;
+				while ((c = fdict.read()) > -1)
+				{
+					if ((c >= '0') && (c <= '9')) // No conversion required for chars < 0xBE
+					{
+						// new word - finalize and save old word
+						lookup[i++] = new String(sbuf, 0, slen);
+
+						// and read how much to go back
+						n = 0;
+						do
+						{
+							// base 10...
+							n *= 10;
+							n += (c - '0');
+						} while (((c = fdict.read()) > -1) && (c >= '0') && (c <= '9'));
+						slen -= n;
+					}
+					sbuf[slen++] = ISO8859_To_Unicode(c);
+				}
+			}
+			finally
+			{
+				fdict.close();
+			}
+
+			MorphDataLoader dataLoader = new MorphDataLoader(
+					classLoader.getResourceAsStream(packagePath + Constants.DescFile),
+					classLoader.getResourceAsStream(packagePath + Constants.StemsFile));
+			try
+			{
+				GZIPInputStream fprefixes = new GZIPInputStream(classLoader.getResourceAsStream(packagePath + Constants.PrefixesFile));
+				try
+				{
+					DictRadix<MorphData> ret = new DictRadix<MorphData>();
+
+					for (int i = 0; lookup[i] != null; i++)
+					{
+						MorphData data = new MorphData();
+						//data.Prefixes = Byte.parseByte(fprefixes.ReadByte()); // Read prefix hint byte
+						data.setPrefixes(fprefixes.read()); // Read prefix hint byte
+						data.setDescFlags(dataLoader.readDescFile());
+
+						List<Integer> stemReferences = dataLoader.readStemFile();
+						data.setLemmas(new String[stemReferences.size()]);
+						int stemPosition = 0;
+						for (int r : stemReferences)
+						{
+							// This is a bypass for the psuedo-stem "שונות", as defined by hspell
+							// TODO: Try looking into changing this in hspell itself
+							if (lookup[r].equals("שונות") && !lookup[r].equals(lookup[i]))
+							{
+								data.getLemmas()[stemPosition++] = null;
+							}
+							else
+							{
+								data.getLemmas()[stemPosition++] = lookup[r];
+
+//								int mask = data.getDescFlags()[stemPosition-1];
+//								//Igal: add Plural (רבים) without Pronominal (כינוי)
+//								if( /*(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_NUMMASK))>0 && 
+//									(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_NOUN))>0 &&
+//									(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_GENDERMASK))>0 &&
+//									(data.getDescFlags()[stemPosition-1]&(Constants.DMask.D_OMASK))==0*/
+//									((mask&(DMask.D_NOUN+DMask.D_NUMMASK+DMask.D_ONUMMASK+DMask.D_GENDERMASK+DMask.D_OGENDERMASK))>0 ) ||
+//									((mask&DMask.D_VERB+DMask.D_IMPERATIVE+DMask.D_INFINITIVE+DMask.D_BINFINITIVE)>0) ||
+//									((mask&DMask.D_ADJ)>0 )
+//								)  {
+//
+//									CustomRelation relation = new CustomRelation();
+//									relation.word = lookup[i];
+//									relation.to = lookup[r];
+//									relation.mask = data.getDescFlags()[stemPosition-1];
+//									customRelations.add(relation);
+//								}
+
+							}
+						}
+						ret.addNode(lookup[i], data);
+					}
+
+					for (CustomRelation relation : customRelations) {
+						MorphData subData = ret.lookup(relation.to);
+						if( subData!=null ) {
+							String[] subLemmas = new String[subData.getLemmas().length+1];
+							System.arraycopy(subData.getLemmas(), 0, subLemmas, 0, subData.getLemmas().length);
+							subLemmas[subData.getLemmas().length]=relation.word;
+							subData.setLemmas(subLemmas);
+
+							Integer[] subFlags = new Integer[subData.getDescFlags().length+1];
+							System.arraycopy(subData.getDescFlags(), 0, subFlags, 0, subData.getDescFlags().length);
+							subFlags[subData.getDescFlags().length]=relation.mask;
+							subData.setDescFlags(subFlags);
+						}
+					}
+					return ret;
+				}
+				finally
+				{
+					fprefixes.close();
+				}
+			}
+			finally
+			{
+				dataLoader.dispose();
+			}
+		}
+		else // Use optimized version for loading HSpell's dictionary files
+		{
+
+			GZIPInputStream fdict = new GZIPInputStream(classLoader.getResourceAsStream(packagePath + Constants.DictionaryFile));
+			try
+			{
+				GZIPInputStream fprefixes = new GZIPInputStream(classLoader.getResourceAsStream(packagePath + Constants.PrefixesFile));
 				try
 				{
 					DictRadix<MorphData> ret = new DictRadix<MorphData>();
@@ -282,15 +525,31 @@ public class Loader
 		FileInputStream fileIS = new FileInputStream(file);
 		InputStreamReader input = new InputStreamReader(fileIS, "UTF-8");
 		StringWriter output = new StringWriter();
-        char[] buffer = new char[DEFAULT_BUFFER_SIZE];
-        long count = 0;
-        int n = 0;
-        while (-1 != (n = input.read(buffer))) {
-            output.write(buffer, 0, n);
-            count += n;
-        }
-        input.close();
-        return output.toString();
+		char[] buffer = new char[DEFAULT_BUFFER_SIZE];
+		long count = 0;
+		int n = 0;
+		while (-1 != (n = input.read(buffer))) {
+			output.write(buffer, 0, n);
+			count += n;
+		}
+		input.close();
+		return output.toString();
 	}
-    private static final int DEFAULT_BUFFER_SIZE = 1024 * 4;
+
+	private static String readFileToString(InputStream stream) throws IOException
+	{
+		InputStreamReader input = new InputStreamReader(stream, "UTF-8");
+		StringWriter output = new StringWriter();
+		char[] buffer = new char[DEFAULT_BUFFER_SIZE];
+		long count = 0;
+		int n = 0;
+		while (-1 != (n = input.read(buffer))) {
+			output.write(buffer, 0, n);
+			count += n;
+		}
+		input.close();
+		return output.toString();
+	}
+
+	private static final int DEFAULT_BUFFER_SIZE = 1024 * 4;
 }
